@@ -9,7 +9,7 @@ import (
 
 	_ "github.com/joho/godotenv/autoload"
 
-	"skribblr-backend/internal/database"
+	"github.com/scythe504/skribblr-backend/internal/database"
 )
 
 type Server struct {

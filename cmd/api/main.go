@@ -9,7 +9,7 @@ import (
 	"syscall"
 	"time"
 
-	"skribblr-backend/internal/server"
+	"github.com/scythe504/skribblr-backend/internal/server"
 )
 
 func gracefulShutdown(apiServer *http.Server, done chan bool) {
