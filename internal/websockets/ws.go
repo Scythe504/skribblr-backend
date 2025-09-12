@@ -1,5 +1,8 @@
 package websockets
+
 import (
+	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -50,7 +53,7 @@ func handleGuess(player *internal.Player, data interface{}) {
 		room.Mu.Unlock()
 
 		// Prepare broadcast message without holding the lock
-		msg := internal.Message{
+		msg := internal.Message[any]{
 			Type: "correct_guess",
 			Data: map[string]any{
 				"player": player.Username,
@@ -71,7 +74,7 @@ func handleGuess(player *internal.Player, data interface{}) {
 	log.Printf("=== End Processing Guess ===")
 }
 
-func broadcastToRoom(room *internal.Room, msg internal.Message) {
+func broadcastToRoom(room *internal.Room, msg internal.Message[any]) {
 	log.Printf("=== Start Broadcast Debug ===")
 
 	// Get a snapshot of players with read lock
@@ -123,9 +126,9 @@ func startNewRound(room *internal.Room) {
 	newWord := room.Word
 	room.Mu.Unlock()
 
-	msg := internal.Message{
+	msg := internal.Message[any]{
 		Type: "new_round",
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"message": "New round has started",
 			"word":    newWord,
 		},
@@ -143,10 +146,15 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	username := r.URL.Query().Get("username")
+
+	if username == "" {
+		username = "Anonymous"
+	}
 	player := &internal.Player{
 		Id:       utils.GenerateID(8),
 		Conn:     conn,
-		Username: "Sjsfw",
+		Username: username,
 		Score:    0,
 	}
 
@@ -157,29 +165,11 @@ func HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	roomId := parts[len(parts)-1]
-	log.Printf("Player %s joining room: %s", player.Username, roomId)
 
-	room := getOrCreateRoom(roomId)
-	player.Room = room
-
-	room.Mu.Lock()
-	room.Players[player.Id] = player
-	playerCount := len(room.Players)
-	room.Mu.Unlock()
-
-	log.Printf("Added player to room. Total players: %d", playerCount)
-
-	// Send a welcome message to confirm connection
-	welcomeMsg := internal.Message{
-		Type: "welcome",
-		Data: map[string]string{
-			"playerId": player.Id,
-			"roomId":   roomId,
-		},
-	}
-
-	if err := conn.WriteJSON(welcomeMsg); err != nil {
-		log.Printf("Failed to send welcome message: %v", err)
+	if err := AddPlayer(roomId, player); err != nil {
+		log.Printf("Failed to add player to room: %v", err)
+		conn.Close()
+		return
 	}
 
 	go handleMessages(player)
@@ -218,57 +208,47 @@ func getOrCreateRoom(roomId string) *internal.Room {
 	return room
 }
 
-func handleDraw(player *internal.Player, data any) {
-	player.Room.Mu.RLock()
-	if player.Room.Current == nil || player != player.Room.Current {
-		player.Room.Mu.RUnlock()
-		return
-	}
-	defer player.Room.Mu.RUnlock()
-
-	drawData, ok := data.(internal.DrawData)
-	if !ok {
-		return
-	}
-
-	msg := internal.Message{
-		Type: "draw",
-		Data: drawData,
-	}
-
-	broadcastToRoomExcept(player.Room, msg, player)
-}
-
 func handleMessages(player *internal.Player) {
 	defer func() {
-		player.Conn.Close()
+		player.Conn.Close()	
 		removePlayer(player)
 	}()
 
 	log.Printf("Started message handler for player: %s in room: %s", player.Username, player.Room.Id)
 
 	for {
-		var msg internal.Message
-		err := player.Conn.ReadJSON(&msg)
+		_, rawMessage, err := player.Conn.ReadMessage()
 		if err != nil {
-			log.Printf("Read error for player %s: %v", player.Username, err)
+			log.Printf("Read error occured during websocket message %s, %v", player.Username, err)
 			break
 		}
 
-		log.Printf("Received message type: %s from player: %s", msg.Type, player.Username)
+		var baseMsg internal.Message[json.RawMessage]
 
-		switch msg.Type {
-		case "draw":
-			handleDraw(player, msg.Data)
+		if err := json.Unmarshal(rawMessage, &baseMsg); err != nil {
+			log.Printf("Failed to parse base message: %v", err)
+			continue
+		}
+
+		log.Printf("Received message type: %s from player: %s", baseMsg.Type, player.Username)
+
+		switch baseMsg.Type {
+		case "pixel_draw":
+			handlePixelDraw(player, baseMsg.Data)
 		case "guess":
-			handleGuess(player, msg.Data)
+			var guess string
+			if err := json.Unmarshal(baseMsg.Data, &guess); err != nil {
+				log.Printf("Failed to parse guess data: %v", err)
+				continue
+			}
+			handleGuess(player, guess)	
 		default:
-			log.Printf("Unknown message type: %s", msg.Type)
+			log.Printf("Unknown message type: %s", baseMsg.Type)
 		}
 	}
 }
 
-func broadcastToRoomExcept(room *internal.Room, msg internal.Message, excludePlayer *internal.Player) {
+func broadcastToRoomExcept(room *internal.Room, msg internal.Message[any], excludePlayer *internal.Player) {
 	room.Mu.RLock()
 	defer room.Mu.RUnlock()
 
@@ -295,10 +275,68 @@ func removePlayer(player *internal.Player) {
 		roomsMu.Unlock()
 	}
 
-	msg := internal.Message{
+	msg := internal.Message[any]{
 		Type: "player_left",
 		Data: player.Username,
 	}
 
 	broadcastToRoom(room, msg)
 }
+
+func AddPlayer(roomId string, player *internal.Player) error {
+	room := getOrCreateRoom(roomId)
+	player.Room = room
+	room.Mu.Lock()
+	room.Players[player.Id] = player
+	room.Mu.Unlock()
+
+	welcomeMsg := internal.Message[any] {
+		Type: "welcome",
+		Data: map[string]any{
+			"username": player.Username,
+			"playerId": player.Id,
+			"message": fmt.Sprintf("%s has joined the room.", player.Username),
+		},
+	}
+
+	if err := player.Conn.WriteJSON(welcomeMsg); err != nil {
+		return fmt.Errorf("failed to send welcome msg")
+	}
+
+	joinMsg := internal.Message[any] {
+		Type: "player_joined",
+		Data: map[string]any {
+			"username": player.Username,
+			"playerId": player.Id,
+		},
+	}
+
+	broadcastToRoomExcept(room, joinMsg, player)
+	return nil
+}
+
+func handlePixelDraw(player *internal.Player, rawData json.RawMessage) {
+	player.Room.Mu.Lock()
+	if player.Room.Current == nil || player != player.Room.Current {
+		player.Room.Mu.RUnlock()
+		return
+	}
+
+	var pixelMsg internal.PixelMessage 
+
+	if err := json.Unmarshal(rawData, &pixelMsg); err != nil {
+		log.Printf("Failed to parse pixel data: %v", err)
+		return
+	}
+
+	log.Printf("Received pixel draw: type=%s", pixelMsg.Type)
+
+	// Create message to broadcast to other players
+	msg := internal.Message[any]{
+		Type: "pixel_draw",
+		Data: pixelMsg,
+	}
+
+	broadcastToRoomExcept(player.Room, msg, player)
+}
+

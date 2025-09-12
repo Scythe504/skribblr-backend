@@ -3,13 +3,12 @@ package server
 import (
 	"encoding/json"
 	"log"
-	"math/rand"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gorilla/mux"
 	"github.com/scythe504/skribblr-backend/internal"
-	"github.com/scythe504/skribblr-backend/internal/utils"
 	"github.com/scythe504/skribblr-backend/internal/websockets"
 )
 
@@ -22,8 +21,6 @@ func (s *Server) RegisterRoutes() http.Handler {
 	r.HandleFunc("/", s.HelloWorldHandler)
 
 	r.HandleFunc("/health", s.healthHandler)
-
-	r.HandleFunc("/words", s.GetRandomWords)
 	
 	r.HandleFunc("/rooms-available", s.GetRoomToJoin)
 
@@ -40,6 +37,12 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH")
 		w.Header().Set("Access-Control-Allow-Headers", "Accept, Authorization, Content-Type")
 		w.Header().Set("Access-Control-Allow-Credentials", "false") // Credentials not allowed with wildcard origins
+
+		// If it's a websocket upgrade, skip further CORS checks
+        if strings.ToLower(r.Header.Get("Upgrade")) == "websocket" {
+            next.ServeHTTP(w, r)
+            return
+        }
 
 		// Handle preflight OPTIONS requests
 		if r.Method == http.MethodOptions {
@@ -71,51 +74,6 @@ func (s *Server) healthHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_, _ = w.Write(jsonResp)
-}
-
-func (s *Server) GetRandomWords(w http.ResponseWriter, r *http.Request) {
-	startTime := time.Now().UnixMilli()
-	// Read words from the CSV file
-	response := internal.Response{
-		StatusCode:    http.StatusOK,
-		RespStartTime: startTime,
-	}
-	words := utils.ReadCsvFile("./word-list.csv")
-
-	// If no words are available, return an error response
-	if len(words) == 0 {
-		http.Error(w, "No words available", http.StatusInternalServerError)
-		return
-	}
-
-	// Select 3 random unique words
-	selectedWords := make([]internal.Word, 0, 3)
-	seenIndices := make(map[int]bool)
-
-	for len(selectedWords) < 3 && len(seenIndices) < len(words) {
-		randomIndex := rand.Intn(len(words))
-		if seenIndices[randomIndex] {
-			continue
-		}
-		seenIndices[randomIndex] = true
-		selectedWords = append(selectedWords, words[randomIndex])
-	}
-
-	response.Data = selectedWords
-	endTime := time.Now().UnixMilli()
-	response.RespEndTime = endTime
-	response.NetRespTime = endTime - startTime
-
-	jsonResp, err := json.Marshal(response)
-
-	if err != nil {
-		http.Error(w, "Error generating JSON response", http.StatusInternalServerError)
-		return
-	}
-	// Set response headers and write the JSON response
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	w.Write(jsonResp)
 }
 
 func (s *Server) GetRoomToJoin(w http.ResponseWriter, r *http.Request) {
