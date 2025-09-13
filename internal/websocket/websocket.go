@@ -250,7 +250,8 @@ func AddPlayer(roomId string, player *internal.Player) error {
 	welcomeMsg := internal.Message[any]{
 		Type: "player_joined",
 		Data: map[string]any{
-			"message": fmt.Sprintf("Welcome %s, %s has joined.", player.Username, player.Username),
+			"message":     fmt.Sprintf("Welcome %s, %s has joined.", player.Username, player.Username),
+			"player_data": player,
 		},
 	}
 	// 6. Broadcast player_joined to other players
@@ -437,7 +438,8 @@ func StartGame(room *internal.Room) error {
 		Data: map[string]any{
 			"message": "Game has started!",
 			"room_id": room.Id,
-			"players": len(room.PlayerOrder),
+			"players_count": len(room.PlayerOrder),
+			"players": room.Players,
 		},
 	}
 	room.Mu.Unlock()
@@ -482,9 +484,15 @@ func ResetRoomToLobby(room *internal.Room) {
 	lobbyResetMessage := internal.Message[any]{
 		Type: "lobby_reset",
 		Data: map[string]any{
-			"message":   fmt.Sprintf("Lobby %s has been reset for new game", room.Id),
-			"room_id":   room.Id,
-			"timestamp": time.Now().UnixMilli(),
+			"message":          fmt.Sprintf("Lobby %s has been reset for new game", room.Id),
+			"room_id":          room.Id,
+			"timestamp":        time.Now().UnixMilli(),
+			"players":          room.Players,
+			"phase":            room.Phase,
+			"current_drawer":   room.Current,
+			"round_number":     room.RoundNumber,
+			"max_rounds":       room.MaxRounds,
+			"correct_guessers": room.CorrectGuessers,
 		},
 	}
 	room.Mu.Unlock()
@@ -538,6 +546,7 @@ func StartWaitingPhase(room *internal.Room) {
 			},
 			"phase":          "waiting",
 			"time_remaining": 10, // 10 seconds waiting
+			"round_number": room.RoundNumber,
 		},
 	}
 	room.Mu.Unlock()
@@ -785,41 +794,41 @@ func StartRevealingPhase(room *internal.Room) {
 
 // NextRound advances to next player or ends game
 func NextRound(room *internal.Room) {
-    room.Mu.Lock()
-    defer room.Mu.Unlock()
+	room.Mu.Lock()
+	defer room.Mu.Unlock()
 
-    // 1. Rebuild player order (handles join/leave safely)
-    utils.UpdatePlayerOrder(room)
+	// 1. Rebuild player order (handles join/leave safely)
+	utils.UpdatePlayerOrder(room)
 
-    if len(room.PlayerOrder) == 0 {
-        // No players left, just end the game
-        go EndGame(room)
-        return
-    }
+	if len(room.PlayerOrder) == 0 {
+		// No players left, just end the game
+		go EndGame(room)
+		return
+	}
 
-    // 2. Move to the next index (with wraparound)
-    room.CurrentIndex = (room.CurrentIndex + 1) % len(room.PlayerOrder)
+	// 2. Move to the next index (with wraparound)
+	room.CurrentIndex = (room.CurrentIndex + 1) % len(room.PlayerOrder)
 
-    // 3. If we wrapped back to the first player, increment round
-    if room.CurrentIndex == 0 {
-        room.RoundNumber++
-        if room.RoundNumber > room.MaxRounds {
-            go EndGame(room)
-            return
-        }
-    }
+	// 3. If we wrapped back to the first player, increment round
+	if room.CurrentIndex == 0 {
+		room.RoundNumber++
+		if room.RoundNumber > room.MaxRounds {
+			go EndGame(room)
+			return
+		}
+	}
 
-    // 4. Assign new drawer
-    nextPlayerID := room.PlayerOrder[room.CurrentIndex]
-    room.Current = room.Players[nextPlayerID]
+	// 4. Assign new drawer
+	nextPlayerID := room.PlayerOrder[room.CurrentIndex]
+	room.Current = room.Players[nextPlayerID]
 
-    // ✅ 5. Validate game state after mutations
-    if !utils.ValidateGameState(room) {
-        log.Printf("[NextRound] Invalid game state detected in room %s", room.Id)
-    }
+	// ✅ 5. Validate game state after mutations
+	if !utils.ValidateGameState(room) {
+		log.Printf("[NextRound] Invalid game state detected in room %s", room.Id)
+	}
 
-    // Unlock before starting the next phase
-    go StartWaitingPhase(room)
+	// Unlock before starting the next phase
+	go StartWaitingPhase(room)
 }
 
 // EndGame finishes game and shows final results

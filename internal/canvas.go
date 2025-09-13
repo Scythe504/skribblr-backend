@@ -26,12 +26,12 @@ type PixelBatch struct {
 // Union type for pixel messages - we'll handle this in the message parsing
 type PixelMessage struct {
 	// Single pixel operations
-	Type      PixelMessageType         `json:"type"`
-	X         *int           `json:"x,omitempty"`
-	Y         *int           `json:"y,omitempty"`
-	Color     string         `json:"color,omitempty"`
-	Timestamp int64          `json:"timestamp"`
-	Pixels    []GridPosition `json:"pixels,omitempty"` // Batch operations
+	Type      PixelMessageType `json:"type"`
+	X         *int             `json:"x,omitempty"`
+	Y         *int             `json:"y,omitempty"`
+	Color     string           `json:"color,omitempty"`
+	Timestamp int64            `json:"timestamp"`
+	Pixels    []GridPosition   `json:"pixels,omitempty"` // Batch operations
 }
 
 type PixelMessageType string
@@ -44,12 +44,12 @@ const (
 )
 
 const (
-	CanvasWidth = 35
+	CanvasWidth  = 35
 	CanvasHeight = 20
 )
 
 func NormalizeCoordinates(x int, y int, clientCanvasWidth int, clientCanvasHeight int) (gridX int, gridY int) {
-// - Assume client sends coordinates scaled to their canvas size
+	// - Assume client sends coordinates scaled to their canvas size
 	// - Convert to server grid
 	gridX = int(math.Floor(float64(x) * float64(CanvasWidth) / float64(clientCanvasWidth)))
 	gridY = int(math.Floor(float64(y) * float64(CanvasHeight) / float64(clientCanvasHeight)))
