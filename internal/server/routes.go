@@ -9,7 +9,7 @@ import (
 
 	"github.com/gorilla/mux"
 	"github.com/scythe504/skribblr-backend/internal"
-	"github.com/scythe504/skribblr-backend/internal/websockets"
+	"github.com/scythe504/skribblr-backend/internal/websocket"
 )
 
 func (s *Server) RegisterRoutes() http.Handler {
@@ -21,10 +21,10 @@ func (s *Server) RegisterRoutes() http.Handler {
 	r.HandleFunc("/", s.HelloWorldHandler)
 
 	r.HandleFunc("/health", s.healthHandler)
-	
+
 	r.HandleFunc("/rooms-available", s.GetRoomToJoin)
 
-	r.HandleFunc("/ws/{roomId}", websockets.HandleWebSocket)
+	r.HandleFunc("/ws/{roomId}", websocket.HandleWebSocket)
 
 	return r
 }
@@ -39,10 +39,10 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 		w.Header().Set("Access-Control-Allow-Credentials", "false") // Credentials not allowed with wildcard origins
 
 		// If it's a websocket upgrade, skip further CORS checks
-        if strings.ToLower(r.Header.Get("Upgrade")) == "websocket" {
-            next.ServeHTTP(w, r)
-            return
-        }
+		if strings.ToLower(r.Header.Get("Upgrade")) == "websocket" {
+			next.ServeHTTP(w, r)
+			return
+		}
 
 		// Handle preflight OPTIONS requests
 		if r.Method == http.MethodOptions {
@@ -78,10 +78,10 @@ func (s *Server) healthHandler(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) GetRoomToJoin(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now().UnixMilli()
-	roomId := websockets.GetJoinableRoom()
-	
+	roomId := websocket.GetJoinableRoom()
+
 	var resp internal.Response
-	
+
 	if roomId != "" {
 		// Found a joinable room - SUCCESS
 		resp = internal.Response{
@@ -97,16 +97,16 @@ func (s *Server) GetRoomToJoin(w http.ResponseWriter, r *http.Request) {
 			Data:          "No joinable rooms available",
 		}
 	}
-	
+
 	// Calculate response times
 	endTime := time.Now().UnixMilli()
 	resp.RespEndTime = endTime
 	resp.NetRespTime = endTime - startTime
-	
+
 	// Set response headers
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
-	
+
 	// Send JSON response
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		log.Printf("Error encoding response: %v", err)

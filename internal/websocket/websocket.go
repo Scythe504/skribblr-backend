@@ -31,14 +31,14 @@ var (
 	roomsMu sync.RWMutex
 
 	// Word database - TODO: Load from file/database
-	easyWords   = []string{"cat", "dog", "sun", "car", "tree"}
-	mediumWords = []string{"elephant", "bicycle", "pizza", "guitar", "castle"}
-	hardWords   = []string{"algorithm", "philosophy", "metamorphosis", "constellation", "archaeology"}
+	// easyWords   = []string{"cat", "dog", "sun", "car", "tree"}
+	// mediumWords = []string{"elephant", "bicycle", "pizza", "guitar", "castle"}
+	// hardWords   = []string{"algorithm", "philosophy", "metamorphosis", "constellation", "archaeology"}
 
 	// Game configuration - TODO: Make these configurable
 	maxPlayersPerRoom = 8
 	minPlayersToStart = 2
-	maxRounds         = 3
+	// maxRounds         = 3
 )
 
 // =============================================================================
@@ -785,46 +785,41 @@ func StartRevealingPhase(room *internal.Room) {
 
 // NextRound advances to next player or ends game
 func NextRound(room *internal.Room) {
-	// TODO:
-	room.Mu.Lock()
-	// 1. Increment room.CurrentIndex (with wraparound)
-	currIndex := room.CurrentIndex
-	if currIndex+1 > len(room.PlayerOrder) {
-		currIndex = 0
-	}
-	// 2. Check if completed full cycle through all players:
-	// - If yes: increment RoundNumber
-	if room.RoundNumber+1 <= room.MaxRounds {
-		room.RoundNumber += 1
-	}
-	// - If RoundNumber > MaxRounds: call EndGame()
-	if room.RoundNumber+1 > room.MaxRounds {
-		room.Mu.Unlock()
-		EndGame(room)
-		return
-	}
-	// - If more rounds: continue cycle
-	// 3. Update PlayerOrder if players joined/left
-	for idx, playerId := range room.PlayerOrder {
-		if room.Players[playerId] == nil {
-			room.PlayerOrder = slices.Delete(room.PlayerOrder, idx, idx+1)
-		}
-	}
+    room.Mu.Lock()
+    defer room.Mu.Unlock()
 
-	for _, player := range room.Players {
-		if !slices.Contains(room.PlayerOrder, player.Id) {
-			room.PlayerOrder = append(room.PlayerOrder, player.Id)
-		}
-	}
+    // 1. Rebuild player order (handles join/leave safely)
+    utils.UpdatePlayerOrder(room)
 
-	nIndex := room.GetNextDrawerIndex()
-	nPlayerId := room.PlayerOrder[nIndex]
-	nPlayer := room.Players[nPlayerId]
+    if len(room.PlayerOrder) == 0 {
+        // No players left, just end the game
+        go EndGame(room)
+        return
+    }
 
-	room.Current = nPlayer
-	room.Mu.Unlock()
-	// 4. Call StartWaitingPhase() for next drawer
-	StartWaitingPhase(room)
+    // 2. Move to the next index (with wraparound)
+    room.CurrentIndex = (room.CurrentIndex + 1) % len(room.PlayerOrder)
+
+    // 3. If we wrapped back to the first player, increment round
+    if room.CurrentIndex == 0 {
+        room.RoundNumber++
+        if room.RoundNumber > room.MaxRounds {
+            go EndGame(room)
+            return
+        }
+    }
+
+    // 4. Assign new drawer
+    nextPlayerID := room.PlayerOrder[room.CurrentIndex]
+    room.Current = room.Players[nextPlayerID]
+
+    // ✅ 5. Validate game state after mutations
+    if !utils.ValidateGameState(room) {
+        log.Printf("[NextRound] Invalid game state detected in room %s", room.Id)
+    }
+
+    // Unlock before starting the next phase
+    go StartWaitingPhase(room)
 }
 
 // EndGame finishes game and shows final results
@@ -1263,7 +1258,7 @@ func HandlePixelDrawEnhanced(player *internal.Player, rawData json.RawMessage) {
 		Type: string(pixelMessage.Type),
 		Data: pixelMessage,
 	}
-	
+
 	// TODO: 10. Optional: throttle or rate-limit broadcasts
 	// - Avoid flooding network for large batch operations
 
@@ -1275,18 +1270,53 @@ func HandlePixelDrawEnhanced(player *internal.Player, rawData json.RawMessage) {
 // ClearCanvas resets the drawing canvas
 func ClearCanvas(room *internal.Room, clearedBy *internal.Player) {
 	// TODO:
+	room.Mu.Lock()
 	// 1. Verify clearedBy is current drawer (or allow anyone?)
+	if room.Current != clearedBy {
+		room.Mu.Unlock()
+		return
+	}
 	// 2. Clear room.CanvasState slice
+	room.CanvasState = make([]internal.PixelMessage, 0)
 	// 3. Broadcast canvas_cleared message to all players
+	clearedCanvasMessage := internal.Message[map[string]any]{
+		Type: "canvas_cleared",
+		Data: map[string]any{
+			"room_id":      room.Id,
+			"player_id":    clearedBy.Id,
+			"canvas_state": room.CanvasState,
+			"timestamp":    time.Now().UnixMilli(),
+		},
+	}
+	room.Mu.Unlock()
+	broadcastToRoomExcept(room, clearedCanvasMessage, clearedBy)
 	// 4. Log canvas clear action
+	utils.LogGameEvent(room, clearedCanvasMessage.Type, clearedCanvasMessage.Data)
 }
 
 // UpdateDrawingPermissions sets who can draw based on game state
 func UpdateDrawingPermissions(room *internal.Room) {
 	// TODO:
+	room.Mu.Lock()
 	// 1. Set all players CanDraw = false by default
+	for id := range room.Players {
+		room.Players[id].CanDraw = false
+	}
 	// 2. If in drawing phase, set current drawer CanDraw = true
+	if room.Phase == internal.PhaseDrawing {
+		room.Current.CanDraw = true
+	}
 	// 3. Broadcast drawing_permissions_updated message
+	drawingPermissionMessage := internal.Message[map[string]any]{
+		Type: "drawing_permission_updated",
+		Data: map[string]any{
+			"room_id":   room.Id,
+			"player_id": room.Current.Id,
+			"message":   fmt.Sprintf("%s is now going to draw.", room.Current.Username),
+		},
+	}
+	room.Mu.Unlock()
+	broadcastToRoom(room, drawingPermissionMessage)
 }
 
 // =============================================================================
@@ -1294,38 +1324,136 @@ func UpdateDrawingPermissions(room *internal.Room) {
 // =============================================================================
 
 // broadcastToRoom sends message to all players in room
-func broadcastToRoom(room *internal.Room, msg internal.Message[any]) {
+func broadcastToRoom[T any](room *internal.Room, msg internal.Message[T]) {
 	// TODO:
+	room.Mu.RLock()
 	// 1. Get snapshot of players with read lock
+	playersSnapshot := make([]*internal.Player, 0, len(room.Players))
+	for _, p := range room.Players {
+		// 3. Skip nil players or nil connections
+
+		if p != nil && p.Conn != nil {
+			playersSnapshot = append(playersSnapshot, p)
+		}
+	}
+	room.Mu.RUnlock() // Release RLock early to avoid blocking
+
 	// 2. Iterate through players
-	// 3. Skip nil players or nil connections
-	// 4. Use WriteJSON to send message
-	// 5. Handle connection errors:
-	//    - If websocket close error, remove player
-	//    - Log all send attempts and results
+	// Iterate over the snapshot and send messages
+	for _, player := range playersSnapshot {
+		if err := player.Conn.WriteJSON(msg); err != nil {
+			// Handle websocket close or other errors
+			if websocket.IsCloseError(err) {
+				go removePlayer(player) // Remove asynchronously to avoid deadlock
+			}
+			// Log errors, but continue with other players
+			utils.LogGameEvent(room, "broadcast_error", map[string]any{
+				"player_id": player.Id,
+				"error":     err.Error(),
+				"msg_type":  msg.Type,
+			})
+		} else {
+			// Successful send logging
+			utils.LogGameEvent(room, msg.Type, msg.Data)
+		}
+	}
 	// 6. Use proper locking to avoid races
 }
 
 // broadcastToRoomExcept sends message to all players except one
-func broadcastToRoomExcept(room *internal.Room, msg internal.Message[any], excludePlayer *internal.Player) {
+func broadcastToRoomExcept[T any](room *internal.Room, msg internal.Message[T], excludePlayer *internal.Player) {
 	// TODO:
 	// 1. Similar to broadcastToRoom
+	room.Mu.RLock()
+	playersSnapshot := make([]*internal.Player, 0, len(room.Players))
+	for _, p := range room.Players {
+		if p != nil && p.Conn != nil && p != excludePlayer {
+			playersSnapshot = append(playersSnapshot, p)
+		}
+	}
+	room.Mu.RUnlock() // Release RLock early to avoid blocking
+
+	// TODO:
 	// 2. Skip the excludePlayer in iteration
-	// 3. Handle same error cases and logging
+	for _, player := range playersSnapshot {
+		// TODO:
+		// 3. Handle same error cases and logging
+		if err := player.Conn.WriteJSON(msg); err != nil {
+			if websocket.IsCloseError(err) {
+				go removePlayer(player) // Remove asynchronously to avoid deadlock
+			}
+			utils.LogGameEvent(room, "broadcast_error", map[string]any{
+				"player_id": player.Id,
+				"error":     err.Error(),
+				"msg_type":  msg.Type,
+			})
+		} else {
+			utils.LogGameEvent(room, msg.Type, msg.Data)
+		}
+	}
 }
 
 // BroadcastGameState sends complete game state to all players
 func BroadcastGameState(room *internal.Room) {
-	// TODO:
+	// Validate first to avoid sending broken state
+	if !utils.ValidateGameState(room) {
+		log.Printf("[BroadcastGameState] Invalid game state in room %s, skipping broadcast", room.Id)
+		return
+	}
+
+	room.Mu.RLock()
 	// 1. Create GameStateData struct with:
+	baseState := internal.GameStateData{}
 	//    - Current phase
+	baseState.Phase = room.Phase
 	//    - Round information
+	baseState.RoundNumber = room.RoundNumber
 	//    - Player list (use ToPublicPlayer() to avoid sensitive data)
+	for _, p := range room.Players {
+		baseState.Players = append(baseState.Players, p.ToPublicPlayer())
+	}
 	//    - Current drawer info
+	if room.Current != nil {
+		baseState.CurrentDrawer = room.Current.ToPublicPlayer()
+	}
 	//    - Timer information
+	if room.Timer != nil {
+		baseState.TimeRemaining = int64(room.Timer.TimeRemaining)
+	}
 	//    - Masked word (if in drawing phase)
+	if baseState.Phase == internal.PhaseDrawing {
+		baseState.Word = utils.GetMaskedWord(room.Word)
+	}
+	room.Mu.RUnlock() // unlock early, snapshot is safe
+
+	// Copy for guessers (masked word)
+	guesserState := baseState
+	gameStateUpdateGuessers := internal.Message[internal.GameStateData]{
+		Type: "game_state_update",
+		Data: guesserState,
+	}
+
+	// Copy for drawer (full word)
+	drawerState := baseState
+	drawerState.Word = room.Word
+	gameStateUpdateDrawer := internal.Message[internal.GameStateData]{
+		Type: "game_state_update",
+		Data: drawerState,
+	}
+
 	// 2. Send different data based on player role:
-	//    - Drawer sees full word
-	//    - Guessers see masked word
+	if room.Current != nil {
+		if err := room.Current.Conn.WriteJSON(gameStateUpdateDrawer); err != nil {
+			utils.LogGameEvent(room, gameStateUpdateDrawer.Type, map[string]any{
+				"game_state_data": drawerState,
+				"err":             err.Error(),
+			})
+			if websocket.IsCloseError(err) {
+				go removePlayer(room.Current)
+			}
+		}
+	}
+
 	// 3. Broadcast game_state_update message
+	broadcastToRoomExcept(room, gameStateUpdateGuessers, room.Current)
 }

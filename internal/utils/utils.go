@@ -1,12 +1,15 @@
 package utils
 
 import (
+	"log"
 	"math/rand"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/scythe504/skribblr-backend/internal"
 )
+
 // =============================================================================
 // UTILITY FUNCTIONS
 // =============================================================================
@@ -92,24 +95,84 @@ func GenerateWordChoices() []string {
 // UpdatePlayerOrder rebuilds the drawing rotation order
 func UpdatePlayerOrder(room *internal.Room) {
 	// TODO:
+	room.Mu.Lock()
+	defer room.Mu.Unlock()
+
 	// 1. Clear existing PlayerOrder slice
+	room.PlayerOrder = make([]string, 0)
+
 	// 2. Add all connected players to slice
+	for _, player := range room.Players {
+		if player.IsConnected {
+			room.PlayerOrder = append(room.PlayerOrder, player.Id)
+		}
+	}
+
 	// 3. Optional: shuffle for fairness
+
 	// 4. Adjust CurrentIndex if it's now invalid
+	if room.CurrentIndex >= len(room.PlayerOrder) {
+		room.CurrentIndex = 0
+	}
+
 	// 5. Handle case where current drawer left
+	if room.Current != nil {
+		found := slices.Contains(room.PlayerOrder, room.Current.Id)
+		if !found {
+			room.Current = nil     // no valid current drawer anymore
+			room.CurrentIndex = 0  // reset index
+		}
+	}
 }
+
 
 // ValidateGameState checks room state consistency
 func ValidateGameState(room *internal.Room) bool {
-	// TODO:
+	room.Mu.RLock()
+	defer room.Mu.RUnlock()
+
 	// 1. Check CurrentIndex is valid for PlayerOrder
+	if room.CurrentIndex < 0 || room.CurrentIndex >= len(room.PlayerOrder) {
+		log.Printf("[ValidateGameState] Invalid CurrentIndex: %d (PlayerOrder length %d)", room.CurrentIndex, len(room.PlayerOrder))
+		return false
+	}
+
 	// 2. Check Current player exists in Players map
+	if room.Current != nil {
+		if _, ok := room.Players[room.Current.Id]; !ok {
+			log.Printf("[ValidateGameState] Current drawer %s not found in Players map", room.Current.Id)
+			return false
+		}
+		// also make sure Current.Id matches PlayerOrder[CurrentIndex]
+		if room.PlayerOrder[room.CurrentIndex] != room.Current.Id {
+			log.Printf("[ValidateGameState] CurrentIndex/player mismatch: Current=%s, PlayerOrder[%d]=%s",
+				room.Current.Id, room.CurrentIndex, room.PlayerOrder[room.CurrentIndex])
+			return false
+		}
+	}
+
 	// 3. Check Phase matches expected state
+	switch room.Phase {
+	case internal.PhaseWaiting, internal.PhaseDrawing, internal.PhaseRevealing, internal.PhaseEnded, internal.PhaseLobby:
+		// valid states
+	default:
+		log.Printf("[ValidateGameState] Invalid Phase: %s", room.Phase)
+		return false
+	}
+
 	// 4. Check timer state consistency
-	// 5. Return false if any inconsistencies found
-	// 6. Log validation errors for debugging
+	if room.Timer != nil {
+		remaining := room.Timer.Duration - time.Since(room.Timer.StartTime)
+		if remaining < 0 && room.Timer.IsActive {
+			log.Printf("[ValidateGameState] Timer expired but still marked active")
+			return false
+		}
+	}
+
+	// 5. If we reach here, state looks fine
 	return true
 }
+
 
 // GetPlayerStats returns formatted statistics for a player
 func GetPlayerStats(player *internal.Player) map[string]any {
@@ -137,7 +200,7 @@ func GetRoomStats(room *internal.Room) map[string]interface{} {
 }
 
 // LogGameEvent records important game events for analytics
-func LogGameEvent(room *internal.Room, eventType string, data map[string]interface{}) {
+func LogGameEvent[T any](room *internal.Room, eventType string, data T) {
 	// TODO:
 	// 1. Create structured log entry
 	// 2. Include room ID, timestamp, event type
