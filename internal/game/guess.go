@@ -176,7 +176,7 @@ func HandleGuessEnhanced(player *internal.Player, guess string) {
 		log.Printf("[HandleGuessEnhanced] room=%s: all players guessed -> ending round early", roomID)
 		CancelPhaseTimer(room)
 		// run NextRound asynchronously to avoid blocking caller
-		go NextRound(room)
+		NextRound(room)
 	}
 }
 

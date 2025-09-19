@@ -14,27 +14,26 @@ import (
 // UTILITY FUNCTIONS
 // =============================================================================
 
-// GetMaskedWord converts word to underscores for display
 func GetMaskedWord(word string) string {
-	// TODO:
 	if word == "" {
 		return ""
 	}
-	// 1. Convert each letter to underscore
-	masked := make([]string,0, len(word))
-	// 2. Preserve spaces and punctuation
-	for i := range word {
-		if word[i] == ' ' {
+
+	runes := []rune(word)
+	masked := make([]string, len(runes))
+
+	for i, r := range runes {
+		if r == ' ' {
 			masked[i] = " "
 		} else {
 			masked[i] = "_"
 		}
 	}
 
-	// 3. Return format like "_ _ _ _ _"
 	return strings.Join(masked, " ")
-	// 4. Optional: reveal some letters as hints over time
 }
+
+
 
 func GenerateWordChoices() []string {
 	// TODO:

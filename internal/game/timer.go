@@ -116,11 +116,18 @@ func StartPhaseTimer(room *internal.Room, duration time.Duration, onExpire func(
 // BroadcastTimerUpdate sends current timer state to all players
 func BroadcastTimerUpdate(room *internal.Room) {
 	if room == nil {
+		log.Println("[BroadcastTimerUpdate] skipped: room is nil")
 		return
 	}
 
 	room.Mu.Lock()
-	if room.Timer == nil || !room.Timer.IsActive {
+	if room.Timer == nil {
+		log.Printf("[BroadcastTimerUpdate] room=%s skipped: timer is nil", room.Id)
+		room.Mu.Unlock()
+		return
+	}
+	if !room.Timer.IsActive {
+		log.Printf("[BroadcastTimerUpdate] room=%s skipped: timer not active", room.Id)
 		room.Mu.Unlock()
 		return
 	}
@@ -138,14 +145,20 @@ func BroadcastTimerUpdate(room *internal.Room) {
 
 	room.Mu.Unlock()
 
-	log.Printf("[BroadcastTimerUpdate] room=%s: remaining=%dms phase=%v active=%v",
-		roomID, remaining.Milliseconds(), timerUpdateData.Phase, timerUpdateData.IsActive)
+	log.Printf(
+		"[BroadcastTimerUpdate] room=%s | remaining=%dms | phase=%v | active=%v",
+		roomID,
+		timerUpdateData.TimeRemaining,
+		timerUpdateData.Phase,
+		timerUpdateData.IsActive,
+	)
 
 	SafeBroadcastToRoom(room, internal.Message[any]{
 		Type: "timer_update",
 		Data: timerUpdateData,
 	})
 }
+
 
 // CancelPhaseTimer stops current phase timer
 func CancelPhaseTimer(room *internal.Room) {

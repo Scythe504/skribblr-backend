@@ -226,7 +226,7 @@ func removePlayer(player *internal.Player) {
 		CancelPhaseTimer(room)
 
 		if playerCountAfter >= MinPlayersToStart {
-			NextRound(room) // 🔑 already acquires locks internally
+			NextRound(room) // already acquires locks internally
 		} else {
 			ResetRoomToLobby(room)
 		}

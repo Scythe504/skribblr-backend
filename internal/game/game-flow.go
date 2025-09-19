@@ -115,15 +115,15 @@ func StartWaitingPhase(room *internal.Room) {
 
 	// Broadcast waiting_phase (uses SafeBroadcastToRoom which snapshots connections)
 	log.Printf("[StartWaitingPhase] Room %s: Starting goroutine to broadcast waiting_phase message", roomID)
-	go SafeBroadcastToRoom(room, waitingPhaseMessage)
+	SafeBroadcastToRoom(room, waitingPhaseMessage)
 
 	// Start a short timer to move to word selection
 	// Use StartPhaseTimer which we assume correctly distinguishes cancel vs natural expiry
 	log.Printf("[StartWaitingPhase] Room %s: Starting 15-second phase timer for word selection transition", roomID)
-	go StartPhaseTimer(room, 15*time.Second, func() {
+	StartPhaseTimer(room, 15*time.Second, func() {
 		log.Printf("[StartWaitingPhase] Room %s: Phase timer expired, starting goroutine for word selection", roomID)
 		// call next phase in a goroutine to avoid blocking the timer goroutine
-		go StartWordSelection(room)
+		StartWordSelection(room)
 	})
 	log.Printf("[StartWaitingPhase] Room %s: Function completed successfully", roomID)
 }
@@ -135,16 +135,19 @@ func StartWaitingPhase(room *internal.Room) {
 func StartWordSelection(room *internal.Room) {
 	// --- Critical section: snapshot current drawer and set words ---
 	room.Mu.Lock()
+	log.Printf("[StartWordSelection] room=%s: acquired lock, preparing word selection", room.Id)
 
 	// Validate state
 	if room.Current == nil {
 		room.Mu.Unlock()
-		log.Printf("[StartWordSelection] Room %s: no current drawer, aborting", room.Id)
+		log.Printf("[StartWordSelection] room=%s: no current drawer, aborting", room.Id)
 		return
 	}
 
 	// generate choices (assumes utils.GenerateWordChoices exists and is safe)
 	words := utils.GenerateWordChoices()
+	log.Printf("[StartWordSelection] room=%s: generated word choices=%v", room.Id, words)
+
 	room.WordChoices = words
 
 	// capture the drawer pointer & room id for use outside lock
@@ -152,6 +155,7 @@ func StartWordSelection(room *internal.Room) {
 	roomID := room.Id
 
 	room.Mu.Unlock()
+	log.Printf("[StartWordSelection] room=%s: released lock after snapshot", roomID)
 	// --- end critical section ---
 
 	// Prepare word selection message for the drawer
@@ -166,9 +170,12 @@ func StartWordSelection(room *internal.Room) {
 	}
 
 	// Send the choices to the drawer using the player's safe writer
+	log.Printf("[StartWordSelection] room=%s: sending word choices to drawer %s (%s)",
+		roomID, currentDrawer.Id, currentDrawer.Username)
+
 	if err := currentDrawer.SafeWriteJSON(wordSelectionMessage); err != nil {
 		// If send fails (player disconnected), auto-select the first word as fallback
-		log.Printf("[StartWordSelection] Room %s: failed to send word choices to drawer %s (%s): %v. Auto-selecting first word.",
+		log.Printf("[StartWordSelection] room=%s: failed to send word choices to drawer %s (%s): %v. Auto-selecting first word",
 			roomID, currentDrawer.Id, currentDrawer.Username, err)
 
 		// run selection asynchronously to avoid blocking
@@ -176,7 +183,8 @@ func StartWordSelection(room *internal.Room) {
 		return
 	}
 
-	log.Printf("[StartWordSelection] Room %s: Sent word choices to drawer %s (%s)", roomID, currentDrawer.Id, currentDrawer.Username)
+	log.Printf("[StartWordSelection] room=%s: sent word choices to drawer %s (%s)",
+		roomID, currentDrawer.Id, currentDrawer.Username)
 
 	// Broadcast to other players that we're waiting for drawer choice
 	waitingMessage := internal.Message[any]{
@@ -187,10 +195,17 @@ func StartWordSelection(room *internal.Room) {
 			"time_remaining": 15,
 		},
 	}
-	go SafeBroadcastToRoomExcept(room, waitingMessage, currentDrawer)
+	go func() {
+		log.Printf("[StartWordSelection] room=%s: broadcasting waiting message to all except drawer %s (%s)",
+			roomID, currentDrawer.Id, currentDrawer.Username)
+		SafeBroadcastToRoomExcept(room, waitingMessage, currentDrawer)
+	}()
 
 	// Start selection timer. If the drawer hasn't selected by timeout, auto-select first word.
+	log.Printf("[StartWordSelection] room=%s: starting selection timer (15s)", roomID)
 	StartPhaseTimer(room, 15*time.Second, func() {
+		log.Printf("[StartWordSelection.Timer] room=%s: timer callback triggered", roomID)
+
 		// In the timer callback we'll attempt an idempotent auto-selection.
 		// Acquire lock to check whether the word is already set (someone may have selected it).
 		room.Mu.Lock()
@@ -199,16 +214,18 @@ func StartWordSelection(room *internal.Room) {
 		room.Mu.Unlock()
 
 		if alreadyChosen {
-			log.Printf("[StartWordSelection] Room %s: word already chosen before timer expiry; skipping auto-select", room.Id)
+			log.Printf("[StartWordSelection.Timer] room=%s: word already chosen before timer expiry; skipping auto-select", roomID)
 			return
 		}
 		if len(choicesCopy) == 0 {
-			log.Printf("[StartWordSelection] Room %s: no choices available for auto-select", room.Id)
+			log.Printf("[StartWordSelection.Timer] room=%s: no choices available for auto-select", roomID)
 			return
 		}
 
 		autoWord := choicesCopy[0]
-		log.Printf("[StartWordSelection] Room %s: auto-selecting word '%s' for drawer %s", room.Id, autoWord, currentDrawer.Username)
+		log.Printf("[StartWordSelection.Timer] room=%s: auto-selecting word '%s' for drawer %s (%s)",
+			roomID, autoWord, currentDrawer.Id, currentDrawer.Username)
+
 		// call HandleWordSelection asynchronously
 		go HandleWordSelection(currentDrawer, autoWord)
 	})
@@ -276,6 +293,7 @@ func StartDrawingPhase(room *internal.Room) {
 
 	// --- Critical section: set up round state ---
 	room.Mu.Lock()
+	log.Printf("[StartDrawingPhase] room=%s: acquiring lock for setup", room.Id)
 
 	// validate that a word is present and current drawer exists
 	if room.Current == nil {
@@ -291,12 +309,15 @@ func StartDrawingPhase(room *internal.Room) {
 
 	// 1. Set phase
 	room.Phase = internal.PhaseDrawing
+	log.Printf("[StartDrawingPhase] room=%s: phase set to drawing", room.Id)
 
 	// 2. Allow current drawer to draw
 	room.Current.CanDraw = true
+	log.Printf("[StartDrawingPhase] room=%s: drawer=%s can now draw", room.Id, room.Current.Id)
 
 	// 3. Clear previous correct guessers
 	room.CorrectGuessers = make([]internal.PlayerGuess, 0)
+	log.Printf("[StartDrawingPhase] room=%s: cleared previous correct guessers", room.Id)
 
 	// 4. Reset HasGuessed for all players
 	for _, p := range room.Players {
@@ -304,6 +325,7 @@ func StartDrawingPhase(room *internal.Room) {
 			p.HasGuessed = false
 		}
 	}
+	log.Printf("[StartDrawingPhase] room=%s: reset HasGuessed for all players", room.Id)
 
 	// Snapshot values to use after unlocking
 	roomID := room.Id
@@ -311,7 +333,9 @@ func StartDrawingPhase(room *internal.Room) {
 	wordForDrawer := room.Word // full word (private to drawer)
 	timeLimit := int64(internal.DrawingPhaseDuration.Seconds())
 	masked := utils.GetMaskedWord(room.Word)
+
 	room.Mu.Unlock()
+	log.Printf("[StartDrawingPhase] room=%s: released lock after setup", roomID)
 	// --- End critical section ---
 
 	log.Printf("[StartDrawingPhase] room=%s: starting drawing phase. drawer=%s, word_mask=%s",
@@ -321,6 +345,7 @@ func StartDrawingPhase(room *internal.Room) {
 	StartPhaseTimer(room, internal.DrawingPhaseDuration, func() {
 		// Timer callback: check whether everyone guessed; perform transition in its own goroutine.
 		go func() {
+			log.Printf("[StartDrawingPhase.Timer] room=%s: timer callback triggered", roomID)
 			room.Mu.RLock()
 			allGuessed := room.HasEveryoneGuessed()
 			room.Mu.RUnlock()
@@ -334,6 +359,7 @@ func StartDrawingPhase(room *internal.Room) {
 			}
 		}()
 	})
+	log.Printf("[StartDrawingPhase] room=%s: phase timer started (%ds)", roomID, timeLimit)
 
 	// 6. Broadcast masked word to all players except the drawer
 	maskedWord := internal.MaskedWordData{
@@ -345,8 +371,11 @@ func StartDrawingPhase(room *internal.Room) {
 		Data: maskedWord,
 	}
 
-	// We perform broadcasts asynchronously to avoid blocking this function on many slow connections
-	go SafeBroadcastToRoomExcept(room, maskedWordMessage, drawer)
+	go func() {
+		log.Printf("[StartDrawingPhase] room=%s: broadcasting masked word to all except drawer=%s",
+			roomID, drawer.Id)
+		SafeBroadcastToRoomExcept(room, maskedWordMessage, drawer)
+	}()
 
 	// 7. Send full drawer data (private) to the drawer using safe per-connection writer
 	drawerData := internal.Message[any]{
@@ -360,10 +389,16 @@ func StartDrawingPhase(room *internal.Room) {
 		},
 	}
 
+	log.Printf("[StartDrawingPhase] room=%s: sending private drawer data to %s (%s)",
+		roomID, drawer.Id, drawer.Username)
+
 	if err := drawer.SafeWriteJSON(drawerData); err != nil {
 		// If sending fails, log and continue; drawer may have disconnected — remove player will handle it.
 		log.Printf("[StartDrawingPhase] room=%s: failed to send drawer data to %s (%s): %v",
 			roomID, drawer.Id, drawer.Username, err)
+	} else {
+		log.Printf("[StartDrawingPhase] room=%s: successfully sent drawer data to %s (%s)",
+			roomID, drawer.Id, drawer.Username)
 	}
 }
 
@@ -500,10 +535,11 @@ func NextRound(room *internal.Room) {
 		return
 	}
 
-	room.Mu.Lock()
-
+	log.Printf("[NextRound] room=%s: acquired lock, advancing round", room.Id)
 	// Update order safely
 	utils.UpdatePlayerOrder(room)
+	room.Mu.Lock()
+	log.Printf("[NextRound] room=%s: updated player order=%v", room.Id, room.PlayerOrder)
 
 	// No players left → end game
 	if len(room.PlayerOrder) == 0 {
@@ -516,10 +552,15 @@ func NextRound(room *internal.Room) {
 	// Advance index with wraparound
 	prevIndex := room.CurrentIndex
 	room.CurrentIndex = (room.CurrentIndex + 1) % len(room.PlayerOrder)
+	room.Word = ""
 	wrapped := room.CurrentIndex == 0
+	log.Printf("[NextRound] room=%s: advanced index prev=%d new=%d wrapped=%v",
+		room.Id, prevIndex, room.CurrentIndex, wrapped)
 
 	if wrapped {
 		room.RoundNumber++
+		log.Printf("[NextRound] room=%s: round incremented to %d", room.Id, room.RoundNumber)
+
 		if room.RoundNumber > room.MaxRounds {
 			rn := room.RoundNumber
 			room.Mu.Unlock()
@@ -533,13 +574,15 @@ func NextRound(room *internal.Room) {
 	// Assign new drawer
 	nextPlayerID := room.PlayerOrder[room.CurrentIndex]
 	room.Current = room.Players[nextPlayerID]
+	log.Printf("[NextRound] room=%s: assigned new drawer id=%s", room.Id, nextPlayerID)
 
 	// Validate state
+	room.Mu.Unlock()
 	if !utils.ValidateGameState(room) {
 		log.Printf("[NextRound] room=%s: invalid game state (order=%v index=%d)",
 			room.Id, room.PlayerOrder, room.CurrentIndex)
 	}
-
+	room.Mu.Lock()
 	// Snapshot for logs after unlock
 	nextDrawerID := nextPlayerID
 	nextDrawerName := ""
@@ -549,12 +592,14 @@ func NextRound(room *internal.Room) {
 	roundNum := room.RoundNumber
 
 	room.Mu.Unlock()
+	log.Printf("[NextRound] room=%s: released lock", room.Id)
 
 	// Start waiting phase outside lock
 	log.Printf("[NextRound] room=%s: → next drawer %s (%s), round=%d (prevIndex=%d newIndex=%d)",
 		room.Id, nextDrawerID, nextDrawerName, roundNum, prevIndex, room.CurrentIndex)
 
 	go StartWaitingPhase(room) // async
+	log.Printf("[NextRound] room=%s: started waiting phase goroutine", room.Id)
 }
 
 // EndGame finishes game and shows final results
