@@ -9,7 +9,7 @@ import (
 
 	"github.com/gorilla/mux"
 	"github.com/scythe504/skribblr-backend/internal"
-	"github.com/scythe504/skribblr-backend/internal/websocket"
+	"github.com/scythe504/skribblr-backend/internal/game"
 )
 
 func (s *Server) RegisterRoutes() http.Handler {
@@ -20,11 +20,9 @@ func (s *Server) RegisterRoutes() http.Handler {
 
 	r.HandleFunc("/", s.HelloWorldHandler)
 
-	r.HandleFunc("/health", s.healthHandler)
-
 	r.HandleFunc("/rooms-available", s.GetRoomToJoin)
 
-	r.HandleFunc("/ws/{roomId}", websocket.HandleWebSocket)
+	r.HandleFunc("/ws/{roomId}", game.HandleWebSocket)
 
 	return r
 }
@@ -66,19 +64,9 @@ func (s *Server) HelloWorldHandler(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(jsonResp)
 }
 
-func (s *Server) healthHandler(w http.ResponseWriter, r *http.Request) {
-	jsonResp, err := json.Marshal(s.db.Health())
-
-	if err != nil {
-		log.Fatalf("error handling JSON marshal. Err: %v", err)
-	}
-
-	_, _ = w.Write(jsonResp)
-}
-
 func (s *Server) GetRoomToJoin(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now().UnixMilli()
-	roomId := websocket.GetJoinableRoom()
+	roomId := game.GetJoinableRoom()
 
 	var resp internal.Response
 

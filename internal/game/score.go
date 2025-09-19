@@ -1,4 +1,4 @@
-package websocket
+package game
 
 import (
 	"math"
@@ -48,7 +48,7 @@ func CalculateFinalResults(room *internal.Room) internal.FinalResults {
 	// - Iterate room.RoundStats → look at CorrectGuesses
 	for _, stat := range room.RoundStats {
 		// - Track the PlayerGuess with the lowest GuessTime
-		for _, guessTime := range stat.CorrectGuesses {
+		for _, guessTime := range stat.CorrectGuessers {
 			// - Convert that player into a GameResultData entry
 			if int64(guessTime.GuessTime) < results.FastestGuess.TimeToGuess {
 				results.FastestGuess.PlayerID = guessTime.PlayerID

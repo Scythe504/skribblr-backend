@@ -4,8 +4,6 @@ import (
 	"context"
 	"sync"
 	"time"
-
-	"github.com/gorilla/websocket"
 )
 
 const (
@@ -62,7 +60,7 @@ type RoundStats struct {
 	RoundNumber    int           `json:"round_number"`
 	DrawerId       string        `json:"drawer_id"`
 	Word           string        `json:"word"`
-	CorrectGuesses []PlayerGuess `json:"correct_guesses"`
+	CorrectGuessers []PlayerGuess `json:"correct_guesses"`
 	TotalGuesses   int           `json:"total_guesses"`
 	StartTime      time.Time     `json:"start_time"`
 	EndTime        time.Time     `json:"end_time"`
@@ -112,31 +110,6 @@ type Room struct {
 	// Context for cleanup
 	Context context.Context    `json:"-"`
 	Cancel  context.CancelFunc `json:"-"`
-}
-
-type Player struct {
-	Id       string          `json:"id"`
-	Conn     *websocket.Conn `json:"-"`
-	Room     *Room           `json:"-"` // Avoid circular reference in JSON
-	Username string          `json:"username"`
-	Score    int             `json:"score"`
-
-	// Game state
-	CanvasHeight  int       `json:"canvas_height"`
-	CanvasWidth   int       `json:"canvas_width"`
-	IsReady       bool      `json:"is_ready"`
-	HasGuessed    bool      `json:"has_guessed"`
-	LastGuessTime time.Time `json:"last_guess_time"`
-	IsConnected   bool      `json:"is_connected"`
-	JoinedAt      time.Time `json:"joined_at"`
-
-	// DrawingPermissions
-	CanDraw bool `json:"can_draw"`
-
-	// Statistics
-	TotalGuesses   int `json:"total_guesses"`
-	CorrectGuesses int `json:"correct_guesses"`
-	TimesDrawn     int `json:"times_drawn"`
 }
 
 type GameStateData struct {

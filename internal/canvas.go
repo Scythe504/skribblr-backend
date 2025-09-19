@@ -38,7 +38,7 @@ type PixelMessageType string
 
 const (
 	BatchPlace PixelMessageType = "batch_place"
-	PixelPlace PixelMessageType = "pixel"
+	PixelPlace PixelMessageType = "place"
 	ErasePixel PixelMessageType = "erase"
 	BatchErase PixelMessageType = "batch_erase"
 )
